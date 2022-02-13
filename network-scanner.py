@@ -76,6 +76,9 @@ def main():
 
     parsed = scan(target)
     new_network = build_network(parsed)
+    if not new_network:
+        print(f'Warning: No network hosts found. Was this executed witout sudo?')
+        return
 
     service = build('sheets', 'v4')
     network = read_sheet(service, sheet_id)

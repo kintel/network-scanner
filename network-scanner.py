@@ -18,7 +18,7 @@ parser.add_argument('--credentials', type=str, help='Google Sheet API credential
 parser.add_argument('--network', type=str, help='Network to scan (CIDR notation)')
 
 def scan(target):
-    nm = NmapProcess(target, options="-sn")
+    nm = NmapProcess(target, options="--privileged -sn")
     rc = nm.run()
     if rc != 0:
         print("nmap scan failed: {0}".format(nm.stderr))

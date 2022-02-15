@@ -1,0 +1,8 @@
+# CIDR of network you want to scan
+network = 192.168.1.0/24
+
+# Google sheet ID; the ID that comes after https://docs.google.com/spreadsheets/d/
+spreadsheet = <Spreadsheet ID>
+
+# Google sheet credentials
+credentials = credentials.json

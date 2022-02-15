@@ -57,9 +57,9 @@ WantedBy=timers.target
 
 **Useful cmd-lines:**
 ```
-$ systemctl --user enable network-scanner.service
-$ systemctl --user enable network-scanner.timer
-$ journalctl -S today --user-unit network-scanner.service
+systemctl --user enable network-scanner.service
+systemctl --user enable network-scanner.timer
+journalctl -S today --user-unit network-scanner.service
 
 systemctl --user status network-scanner.timer
 systemctl --user status network-scanner.service

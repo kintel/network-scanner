@@ -55,6 +55,7 @@ OnUnitInactiveSec=3600
 WantedBy=timers.target
 ```
 
+**Useful cmd-lines:**
 ```
 $ systemctl --user enable network-scanner.service
 $ systemctl --user enable network-scanner.timer

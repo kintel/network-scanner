@@ -61,6 +61,10 @@ systemctl --user enable network-scanner.service
 systemctl --user enable network-scanner.timer
 journalctl -S today --user-unit network-scanner.service
 
+# Lingering is important for user services as otherwise, 
+# the systemd user service is only active while a login session exists.
+sudo loginctl enable-linger kintel
+
 systemctl --user status network-scanner.timer
 systemctl --user status network-scanner.service
 systemctl --user list-timers --all

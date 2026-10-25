@@ -31,3 +31,35 @@ def test_main_dry_run_with_mock_scan(tmp_path):
     assert rc == 0
     # Assert values().update() was NOT called in dry-run mode
     mock_service.spreadsheets().values().update.assert_not_called()
+
+
+def test_main_resolves_relative_credentials_from_config_dir(tmp_path):
+    config_dir = tmp_path / "config_dir"
+    config_dir.mkdir()
+    creds_file = config_dir / "credentials.json"
+    creds_file.write_text('{"type": "service_account"}')
+    config_file = config_dir / "config.ini"
+    config_file.write_text(
+        "network = 10.20.30.0/24\n"
+        "spreadsheet = test-spreadsheet-id\n"
+        "credentials = credentials.json\n"
+    )
+
+    mock_service = MagicMock()
+    mock_get = mock_service.spreadsheets().values().get.return_value
+    mock_get.execute.return_value = {
+        "values": [
+            ["mac", "ip", "name", "type", "vendor", "timestamp"],
+        ]
+    }
+
+    with patch("network_scanner.build", return_value=mock_service):
+        rc = main([
+            "--config", str(config_file),
+            "--mock-scan", str(FIXTURE_PATH),
+            "--dry-run",
+        ])
+
+    assert rc == 0
+    mock_service.spreadsheets().values().update.assert_not_called()
+

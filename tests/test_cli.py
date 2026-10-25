@@ -1,3 +1,4 @@
+import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -62,4 +63,43 @@ def test_main_resolves_relative_credentials_from_config_dir(tmp_path):
 
     assert rc == 0
     mock_service.spreadsheets().values().update.assert_not_called()
+
+
+def test_main_interval_daemon_mode_stops_cleanly(tmp_path):
+    creds_file = tmp_path / "credentials.json"
+    creds_file.write_text('{"type": "service_account"}')
+
+    mock_service = MagicMock()
+    mock_get = mock_service.spreadsheets().values().get.return_value
+    mock_get.execute.return_value = {
+        "values": [
+            ["mac", "ip", "name", "type", "vendor", "timestamp"],
+        ]
+    }
+
+    stop_event = threading.Event()
+
+    def stop_after_first_wait(_timeout):
+        stop_event.set()
+        return True
+
+    with (
+        patch("network_scanner.build", return_value=mock_service),
+        patch.object(stop_event, "wait", side_effect=stop_after_first_wait) as mock_wait,
+    ):
+        rc = main(
+            [
+                "--network", "10.20.30.0/24",
+                "--spreadsheet", "test-spreadsheet-id",
+                "--credentials", str(creds_file),
+                "--mock-scan", str(FIXTURE_PATH),
+                "--dry-run",
+                "--interval", "3600",
+            ],
+            stop_event=stop_event,
+        )
+
+    assert rc == 0
+    mock_wait.assert_called_once_with(3600)
+
 

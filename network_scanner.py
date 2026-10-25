@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import logging
 import os
+import signal
 import sys
+import threading
 from datetime import datetime
 from typing import Any
 
@@ -49,6 +51,12 @@ def build_arg_parser() -> configargparse.ArgParser:
         default="INFO",
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
         help="Set the logging level (default: INFO)",
+    )
+    parser.add_argument(
+        "--interval",
+        type=int,
+        default=0,
+        help="Run continuously, repeating scan every N seconds (0 = run once and exit)",
     )
     return parser
 
@@ -216,7 +224,29 @@ def write_sheet(
     return updated_cells
 
 
-def main(argv: list[str] | None = None) -> int:
+def run_once(args: Any) -> int:
+    """Execute a single scan and sheet synchronization pass."""
+    parsed_scan = scan(args.network, mock_file=args.mock_scan)
+    new_network = build_network(parsed_scan)
+
+    if not new_network:
+        logger.warning("No network hosts with MAC addresses found. Was this executed with appropriate permissions?")
+        return 1
+
+    try:
+        service = build("sheets", "v4", cache_discovery=False)
+        existing_network = read_sheet(service, args.spreadsheet)
+        merged_network, new_macs, updated_macs = merge_network_data(existing_network, new_network)
+        logger.info(f"Diff summary: {len(new_macs)} new devices, {len(updated_macs)} updated active hosts.")
+        write_sheet(service, args.spreadsheet, merged_network, dry_run=args.dry_run)
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"Google Sheets synchronization failed: {e}")
+        return 1
+
+    return 0
+
+
+def main(argv: list[str] | None = None, stop_event: threading.Event | None = None) -> int:
     """Main CLI entrypoint."""
     parser = build_arg_parser()
     args = parser.parse_args(argv)
@@ -243,24 +273,28 @@ def main(argv: list[str] | None = None) -> int:
 
     os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = credentials_path
 
-    parsed_scan = scan(args.network, mock_file=args.mock_scan)
-    new_network = build_network(parsed_scan)
+    if args.interval <= 0:
+        return run_once(args)
 
-    if not new_network:
-        logger.warning("No network hosts with MAC addresses found. Was this executed with appropriate permissions?")
-        return 1
+    event = stop_event or threading.Event()
 
-    try:
-        service = build("sheets", "v4", cache_discovery=False)
-        existing_network = read_sheet(service, args.spreadsheet)
-    except Exception as e:  # noqa: BLE001
-        logger.error(f"Failed to connect to Google Sheets API: {e}")
-        return 1
+    def _handle_signal(signum: int, _frame: Any) -> None:
+        logger.info(f"Received signal {signum}, shutting down gracefully...")
+        event.set()
 
-    merged_network, new_macs, updated_macs = merge_network_data(existing_network, new_network)
-    logger.info(f"Diff summary: {len(new_macs)} new devices, {len(updated_macs)} updated active hosts.")
+    if threading.current_thread() is threading.main_thread():
+        signal.signal(signal.SIGINT, _handle_signal)
+        signal.signal(signal.SIGTERM, _handle_signal)
 
-    write_sheet(service, args.spreadsheet, merged_network, dry_run=args.dry_run)
+    logger.info(f"Starting continuous daemon mode (interval: {args.interval}s)")
+    while not event.is_set():
+        run_once(args)
+        if event.is_set():
+            break
+        logger.info(f"Sleeping {args.interval} seconds until next scan...")
+        event.wait(args.interval)
+
+    logger.info("Daemon stopped.")
     return 0
 
 

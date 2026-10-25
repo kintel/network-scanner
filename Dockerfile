@@ -12,7 +12,7 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends nmap libcap2-bin && \
     rm -rf /var/lib/apt/lists/*
 COPY --from=builder /opt/venv /opt/venv
-ENV PATH="/opt/venv/bin:$PATH"
+ENV PATH="/opt/venv/bin:$PATH" PYTHONUNBUFFERED=1
 WORKDIR /app
 COPY network_scanner.py network-scanner.py ./
 ENTRYPOINT ["python", "network-scanner.py"]

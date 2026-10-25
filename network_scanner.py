@@ -230,11 +230,18 @@ def main(argv: list[str] | None = None) -> int:
     if args.dry_run:
         logger.info("=== DRY-RUN MODE ACTIVE: No changes will be written to Google Sheets ===")
 
-    if not os.path.exists(args.credentials):
-        logger.error(f"Credentials file not found: {args.credentials}")
+    credentials_path = args.credentials
+    if not os.path.isabs(credentials_path) and not os.path.exists(credentials_path) and args.config:
+        config_dir = os.path.dirname(os.path.abspath(args.config))
+        candidate = os.path.join(config_dir, credentials_path)
+        if os.path.exists(candidate):
+            credentials_path = candidate
+
+    if not os.path.exists(credentials_path):
+        logger.error(f"Credentials file not found: {credentials_path}")
         return 1
 
-    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = args.credentials
+    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = credentials_path
 
     parsed_scan = scan(args.network, mock_file=args.mock_scan)
     new_network = build_network(parsed_scan)

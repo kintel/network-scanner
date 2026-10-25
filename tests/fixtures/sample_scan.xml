@@ -1,0 +1,20 @@
+<?xml version="1.0" ?>
+<nmaprun scanner="nmap" args="nmap -sP -oX nmap.xml 10.20.30.0/24" start="1287162864" startstr="Fri Oct 15 19:14:24 2010" version="5.21" xmloutputversion="1.03">
+<host><status state="up" reason="arp-response"/>
+<address addr="10.20.30.1" addrtype="ipv4" />
+<address addr="00:0D:B9:18:E6:CD" addrtype="mac" vendor="PC Engines GmbH" />
+<hostnames>
+<hostname name="gateway.local" type="PTR"/>
+</hostnames>
+</host>
+<host><status state="down" reason="no-response"/>
+<address addr="10.20.30.2" addrtype="ipv4" />
+</host>
+<host><status state="up" reason="arp-response"/>
+<address addr="10.20.30.3" addrtype="ipv4" />
+<address addr="00:24:1D:76:BF:25" addrtype="mac" />
+<hostnames>
+</hostnames>
+</host>
+<runstats><finished time="1287162866" timestr="Fri Oct 15 19:14:26 2010" elapsed="2.00" summary="Nmap done: 256 IP addresses (2 hosts up) scanned in 2.00 seconds" exit="success"/><hosts up="2" down="1" total="3"/></runstats>
+</nmaprun>

@@ -1,46 +1,61 @@
 # network-scanner
 License: MIT
 
-A simple nmap scanner which scans a subnet and merges data, using the MAC address as key, about the devices found into a Google sheet.
+A simple Nmap scanner which scans a local subnet and merges discovered device data (using MAC address as primary key) into a Google Sheet inventory.
 
-Useful to run as a cron job for keeping track of MAC addresses and IP addresses of a home network.
+Useful to run as a scheduled systemd service for keeping track of MAC addresses, IP leases, and vendor information on a home network.
 
-**Usage:**
+## Quickstart (`uv`)
+
+Install dependencies with [`uv`](https://docs.astral.sh/uv/):
+```bash
+uv sync
 ```
-pipenv install
-pipenv run python network-scanner.py --config config.ini
+
+Run tests:
+```bash
+uv run pytest
 ```
 
-## Enable sudoless nmap
-
-By default `nmap` needs to be run as root to be able to scan for MAC addresses.
-
-Sudoless nmap can be enabled with:
+Run in dry-run mode (scans network, reads sheet, prints diff, but does not modify sheet):
+```bash
+uv run python network-scanner.py --config config.ini --dry-run
 ```
+
+Run live synchronization:
+```bash
+uv run python network-scanner.py --config config.ini
+```
+
+## Enable Sudoless Nmap
+
+By default `nmap` needs raw network capabilities to capture MAC addresses on Layer 2.
+
+Sudoless nmap capability on Linux can be enabled with:
+```bash
 sudo setcap cap_net_raw,cap_net_admin,cap_net_bind_service+eip /usr/bin/nmap
 ```
 
-## systemd config
+## Systemd User Service Configuration
 
-Deploying this using systemd user units can be done with a timer plus a oneshot service.
-The usage of pipenv here isn't too elegant, but it does the job for now.
+Deploying via systemd user units:
 
-```
+```ini
 $ cat ~/.config/systemd/user/network-scanner.service
 [Unit]
-Description=Logs system statistics to the systemd journal
+Description=Timed network scanner
 Wants=network-scanner.timer
 
 [Service]
 Type=oneshot
 WorkingDirectory=/home/kintel/code/network-scanner
-ExecStart=/usr/bin/pipenv run python network-scanner.py --config config.ini
+ExecStart=/home/kintel/.local/bin/uv run python network-scanner.py --config config.ini
 
 [Install]
 WantedBy=default.target
 ```
 
-```
+```ini
 $ cat ~/.config/systemd/user/network-scanner.timer 
 [Unit]
 Description=Timed network scan
@@ -55,17 +70,18 @@ OnUnitInactiveSec=3600
 WantedBy=timers.target
 ```
 
-**Useful cmd-lines:**
-```
-systemctl --user enable network-scanner.service
+**Useful systemd commands:**
+```bash
+systemctl --user daemon-reload
 systemctl --user enable network-scanner.timer
+systemctl --user start network-scanner.service
 journalctl -S today --user-unit network-scanner.service
 
-# Lingering is important for user services as otherwise, 
-# the systemd user service is only active while a login session exists.
+# Lingering ensures user services stay active across logouts
 sudo loginctl enable-linger kintel
 
 systemctl --user status network-scanner.timer
 systemctl --user status network-scanner.service
 systemctl --user list-timers --all
 ```
+

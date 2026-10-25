@@ -1,0 +1,35 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# Secrets and local configurations
+config.ini
+config.ini~
+credentials*.json
+*.pem
+*.key
+
+# Temporary / Scratch data
+*.leases
+*.csv
+*.csv~
+*.xml
+!tests/fixtures/*.xml
+*.bak
+*.swp
+*~
+.DS_Store
+.svn/
+
+# Testing & Linters
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/

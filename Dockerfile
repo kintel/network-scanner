@@ -14,7 +14,7 @@ RUN apt-get update && \
 COPY --from=builder /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH" PYTHONUNBUFFERED=1
 WORKDIR /app
-COPY network_scanner.py network-scanner.py ./
+COPY enrichment.py network_scanner.py network-scanner.py ./
 ENTRYPOINT ["python", "network-scanner.py"]
 CMD ["--config", "/config/config.ini", "--dry-run"]
 

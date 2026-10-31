@@ -52,10 +52,12 @@ def test_mdns_query_and_decode():
 
 def test_resolve_dns_and_mdns_forward_verified():
     with (
-        patch("network_scanner.socket.gethostbyaddr", return_value=("esp-tester-5g.home", [], ["192.168.2.107"])),
-        patch("network_scanner.socket.gethostbyname", return_value="192.168.2.107"),
+        patch("enrichment.socket.gethostbyaddr", return_value=("esp-tester-5g.home", [], ["192.168.2.107"])),
+        patch("enrichment.socket.gethostbyname", return_value="192.168.2.107"),
     ):
-        dns_map, mdns_map = resolve_dns_and_mdns(["192.168.2.107"], mdns_timeout=0)
+        dns_map, mdns_map, raw_map = resolve_dns_and_mdns(["192.168.2.107"], mdns_timeout=0)
         assert dns_map == {"192.168.2.107": "esp-tester-5g.home"}
         assert mdns_map == {}
+        assert raw_map == {"192.168.2.107": ["esp-tester-5g.home"]}
+
 

@@ -10,11 +10,8 @@ from __future__ import annotations
 import logging
 import os
 import signal
-import socket
-import struct
 import sys
 import threading
-import time
 from datetime import datetime
 from typing import Any
 
@@ -23,9 +20,41 @@ from googleapiclient.discovery import build
 from libnmap.parser import NmapParser, NmapParserException
 from libnmap.process import NmapProcess
 
+from enrichment import (
+    _build_mdns_query,
+    _decode_dns_name,
+    clean_hostname,
+    clean_mdns_hostname,
+    enrich_host_from_names,
+    infer_from_hostname,
+    is_unset,
+    resolve_dns_and_mdns,
+    resolve_dns_name,
+)
+
 logger = logging.getLogger("network_scanner")
 
 SHEET_HEADERS = ["mac", "ip", "dns_name", "mdns_name", "name", "type", "vendor", "timestamp"]
+
+__all__ = [
+    "SHEET_HEADERS",
+    "_build_mdns_query",
+    "_decode_dns_name",
+    "build_arg_parser",
+    "build_network",
+    "clean_hostname",
+    "enrich_host_from_names",
+    "infer_from_hostname",
+    "is_unset",
+    "main",
+    "merge_network_data",
+    "read_sheet",
+    "resolve_dns_and_mdns",
+    "resolve_dns_name",
+    "run_once",
+    "scan",
+    "write_sheet",
+]
 
 
 
@@ -96,143 +125,6 @@ def scan(target: str, mock_file: str | None = None, options: str = "--privileged
         return None
 
 
-def _build_mdns_query(qname_str: str, qtype: int, txid: int = 0) -> bytes:
-    """Build a raw DNS/mDNS query packet."""
-    header = struct.pack("!HHHHHH", txid, 0x0000, 1, 0, 0, 0)
-    qname = b"".join(bytes([len(p)]) + p.encode("utf-8") for p in qname_str.strip(".").split(".")) + b"\x00"
-    return header + qname + struct.pack("!HH", qtype, 0x0001)
-
-
-def _decode_dns_name(data: bytes, offset: int) -> tuple[str, int]:
-    """Decode a potentially compressed DNS name from packet bytes."""
-    labels: list[str] = []
-    jumped = False
-    orig_offset = offset
-    seen: set[int] = set()
-    while offset < len(data) and offset not in seen:
-        seen.add(offset)
-        length = data[offset]
-        if length == 0:
-            offset += 1
-            break
-        if (length & 0xC0) == 0xC0:
-            if offset + 1 >= len(data):
-                break
-            if not jumped:
-                orig_offset = offset + 2
-                jumped = True
-            offset = ((length & 0x3F) << 8) | data[offset + 1]
-            continue
-        offset += 1
-        labels.append(data[offset : offset + length].decode("utf-8", errors="replace"))
-        offset += length
-    return ".".join(labels), (orig_offset if jumped else offset)
-
-
-def resolve_dns_and_mdns(
-    ips: list[str],
-    nmap_hostnames: dict[str, list[str]] | None = None,
-    mdns_timeout: float = 1.5,
-) -> tuple[dict[str, str], dict[str, str]]:
-    """Resolve verified .home (unicast DNS) and .local (mDNS) hostnames for active IPs."""
-    dns_names: dict[str, str] = {}
-    candidate_labels: dict[str, str] = {}
-
-    for ip in ips:
-        raw_candidates: list[str] = list((nmap_hostnames or {}).get(ip, []))
-        try:
-            host, _, _ = socket.gethostbyaddr(ip)
-            if host:
-                raw_candidates.append(host)
-        except OSError:
-            pass
-
-        for raw in raw_candidates:
-            label = raw.strip(".").split(".")[0]
-            if not label or label.lower() in ("mynetwork", "localhost", "unknown") or label == ip:
-                continue
-            cand = f"{label}.home"
-            try:
-                if socket.gethostbyname(cand) == ip:
-                    dns_names[ip] = cand
-                    candidate_labels[ip] = label
-                    break
-            except OSError:
-                continue
-
-    mdns_names: dict[str, str] = {}
-    if not ips or mdns_timeout <= 0:
-        return dns_names, mdns_names
-
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
-    try:
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        try:
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
-        except AttributeError:
-            pass
-        try:
-            sock.bind(("", 5353))
-            mreq = struct.pack("4s4s", socket.inet_aton("224.0.0.251"), socket.inet_aton("0.0.0.0"))
-            sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
-        except OSError:
-            sock.bind(("", 0))
-        sock.settimeout(0.1)
-
-        ip_set = set(ips)
-        for idx, ip in enumerate(ips):
-            rev = ".".join(reversed(ip.split("."))) + ".in-addr.arpa"
-            try:
-                sock.sendto(_build_mdns_query(rev, 12, idx + 1), ("224.0.0.251", 5353))
-                if ip in candidate_labels:
-                    sock.sendto(_build_mdns_query(f"{candidate_labels[ip]}.local", 1, idx + 2000), ("224.0.0.251", 5353))
-            except OSError:
-                pass
-
-        deadline = time.monotonic() + mdns_timeout
-        while time.monotonic() < deadline:
-            try:
-                data, _ = sock.recvfrom(4096)
-                if len(data) < 12:
-                    continue
-                _, flags, qdcount, ancount, nscount, arcount = struct.unpack("!HHHHHH", data[:12])
-                if (flags & 0x8000) == 0:
-                    continue
-                offset = 12
-                for _ in range(qdcount):
-                    _, offset = _decode_dns_name(data, offset)
-                    offset += 4
-                for _ in range(ancount + nscount + arcount):
-                    if offset >= len(data):
-                        break
-                    rr_name, offset = _decode_dns_name(data, offset)
-                    if offset + 10 > len(data):
-                        break
-                    rtype, _, _, rdlen = struct.unpack("!HHIH", data[offset : offset + 10])
-                    offset += 10
-                    if rtype == 12 and rr_name.endswith(".in-addr.arpa"):
-                        target, _ = _decode_dns_name(data, offset)
-                        parts = rr_name[: -len(".in-addr.arpa")].split(".")
-                        if len(parts) == 4:
-                            ip_str = ".".join(reversed(parts))
-                            if ip_str in ip_set:
-                                mdns_names[ip_str] = target.rstrip(".")
-                    elif rtype == 1 and rdlen == 4 and rr_name.lower().endswith(".local"):
-                        ip_str = socket.inet_ntoa(data[offset : offset + 4])
-                        if ip_str in ip_set and ip_str not in mdns_names:
-                            mdns_names[ip_str] = rr_name.rstrip(".")
-                    offset += rdlen
-            except TimeoutError:
-                continue
-            except (OSError, struct.error) as exc:
-                logger.debug(f"Ignoring malformed mDNS packet: {exc}")
-                continue
-    finally:
-        sock.close()
-
-    return dns_names, mdns_names
-
-
 def build_network(nmap_report: Any | None, resolve_names: bool = False) -> dict[str, dict[str, Any]]:
     """Extract up hosts with MAC addresses from NmapReport."""
     if nmap_report is None:
@@ -258,13 +150,19 @@ def build_network(nmap_report: Any | None, resolve_names: bool = False) -> dict[
 
     if resolve_names and network:
         active_ips = [info["ip"] for info in network.values() if info.get("ip")]
-        dns_map, mdns_map = resolve_dns_and_mdns(active_ips, nmap_hostnames=nmap_hostnames)
+        dns_map, mdns_map, raw_by_ip = resolve_dns_and_mdns(active_ips, nmap_hostnames=nmap_hostnames)
         for info in network.values():
             ip = info.get("ip", "")
             if ip in dns_map:
                 info["dns_name"] = dns_map[ip]
             if ip in mdns_map:
                 info["mdns_name"] = mdns_map[ip]
+            enrich_host_from_names(info, raw_by_ip.get(ip))
+    else:
+        for info in network.values():
+            ip = info.get("ip", "")
+            if ip in nmap_hostnames:
+                enrich_host_from_names(info, nmap_hostnames[ip])
 
     logger.info(nmap_report.summary)
     logger.info(f"Discovered {len(network)} active hosts with MAC addresses.")
@@ -339,8 +237,11 @@ def merge_network_data(
     merged: dict[str, dict[str, Any]] = {}
     for mac, details in existing_network.items():
         rec = dict(details)
-        rec.setdefault("dns_name", "")
-        rec.setdefault("mdns_name", "")
+        existing_ip = rec.get("ip", "")
+        raw_dns = rec.get("dns_name", "")
+        cleaned_dns_label = clean_hostname(raw_dns, ip=existing_ip)
+        rec["dns_name"] = f"{cleaned_dns_label}.home" if cleaned_dns_label else ""
+        rec["mdns_name"] = clean_mdns_hostname(rec.get("mdns_name", ""), ip=existing_ip)
         merged[mac] = rec
 
     new_devices: list[str] = []
@@ -354,7 +255,11 @@ def merge_network_data(
                 merged[mac]["dns_name"] = device["dns_name"]
             if device.get("mdns_name"):
                 merged[mac]["mdns_name"] = device["mdns_name"]
-            if device.get("vendor"):
+            if is_unset(merged[mac].get("name")) and not is_unset(device.get("name")):
+                merged[mac]["name"] = device["name"]
+            if is_unset(merged[mac].get("type")) and not is_unset(device.get("type")):
+                merged[mac]["type"] = device["type"]
+            if not is_unset(device.get("vendor")):
                 merged[mac]["vendor"] = device["vendor"]
             updated_devices.append(mac)
         else:
@@ -363,9 +268,9 @@ def merge_network_data(
                 "ip": device["ip"],
                 "dns_name": device.get("dns_name", ""),
                 "mdns_name": device.get("mdns_name", ""),
-                "name": device.get("name", "Unknown"),
-                "type": device.get("type", "Unknown"),
-                "vendor": device.get("vendor", "Unknown"),
+                "name": device.get("name") if not is_unset(device.get("name")) else "Unknown",
+                "type": device.get("type") if not is_unset(device.get("type")) else "Unknown",
+                "vendor": device.get("vendor") if not is_unset(device.get("vendor")) else "Unknown",
                 "timestamp": device["timestamp"],
             }
             new_devices.append(mac)

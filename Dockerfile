@@ -9,7 +9,8 @@ RUN uv sync --frozen --no-dev --no-install-project
 # Stage 2: Minimal runtime image
 FROM python:3.12-slim
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends nmap libcap2-bin && \
+    apt-get install -y --no-install-recommends ca-certificates curl nmap libcap2-bin && \
+    curl -fsSL "https://www.wireshark.org/download/automated/data/manuf" -o /app/manuf && \
     rm -rf /var/lib/apt/lists/*
 COPY --from=builder /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH" PYTHONUNBUFFERED=1

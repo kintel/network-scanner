@@ -6,12 +6,46 @@ Hostname-Based Type/Vendor Inference for network-scanner.
 from __future__ import annotations
 
 import logging
+import os
 import re
 import socket
 import struct
 import time
 
 logger = logging.getLogger("network_scanner")
+
+PRIVATE_MAC_VENDOR = "Private / Randomized MAC"
+
+# Built-in OUI overrides for modern / virtual prefixes so offline unit tests and
+# environments without /app/manuf still resolve known homelab hardware accurately.
+KNOWN_OUI_OVERRIDES: dict[str, str] = {
+    "0241A2": "Home Assistant",
+    "2010B1": "Amazon Technologies Inc.",
+    "308398": "Espressif Inc.",
+    "30C599": "ASUSTek COMPUTER INC.",
+    "30C9AB": "Cloud Network Technology Singapore PTE.",
+    "38182B": "Espressif Inc.",
+    "409151": "Espressif Inc.",
+    "4C0F3E": "Intel Corporate",
+    "707DA1": "Sagemcom Broadband SAS",
+    "788DAF": "Sagemcom Broadband SAS",
+    "943CC6": "Espressif Inc.",
+    "BC2411": "Proxmox Server Solutions GmbH",
+    "BC351E": "Tuya Smart Inc.",
+    "BCFCE7": "ASUSTek COMPUTER INC.",
+    "CCBABD": "TP-Link Systems Inc.",
+    "D0CF13": "Espressif Inc.",
+    "D0EF76": "Espressif Inc.",
+    "E831CD": "Espressif Inc.",
+}
+
+_OUI_CACHE: dict[str, str] | None = None
+_OUI_PATHS = (
+    "/app/manuf",
+    "/usr/share/nmap/nmap-mac-prefixes",
+    "/opt/homebrew/share/nmap/nmap-mac-prefixes",
+    "/usr/local/share/nmap/nmap-mac-prefixes",
+)
 
 # Placeholders that should never be used as a device's descriptive 'name'
 # or as a deterministic '.home' script-reachability hostname.
@@ -43,6 +77,104 @@ _GENERIC_NUMBERED_RE = re.compile(r"^(?:iphone|ipad|macbookpro|macbookair|mac|an
 def is_unset(value: str | None) -> bool:
     """Return True if a sheet field is empty, None, or 'Unknown'."""
     return value is None or str(value).strip() in ("", "Unknown")
+
+
+def _normalize_oui_prefix(mac_or_prefix: str) -> str:
+    """Extract uppercase 6-hex-character (24-bit) OUI prefix from a MAC string."""
+    hex_only = re.sub(r"[^0-9A-Fa-f]", "", mac_or_prefix).upper()
+    return hex_only[:6] if len(hex_only) >= 6 else ""
+
+
+def load_oui_database(extra_paths: tuple[str, ...] = ()) -> dict[str, str]:
+    """
+    Load 24-bit OUI prefix -> vendor mapping from Nmap and Wireshark manuf files,
+    layered with KNOWN_OUI_OVERRIDES.
+    """
+    global _OUI_CACHE
+    if _OUI_CACHE is not None and not extra_paths:
+        return _OUI_CACHE
+
+    db: dict[str, str] = {}
+    for path in (*_OUI_PATHS, *extra_paths):
+        if not os.path.exists(path):
+            continue
+        try:
+            with open(path, encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith("#"):
+                        continue
+                    if "\t" in line:
+                        # Wireshark manuf format: AA:BB:CC\tShortName\tFull Vendor Name
+                        parts = [p.strip() for p in line.split("\t") if p.strip()]
+                        if len(parts) >= 2 and "/" not in parts[0]:
+                            prefix = _normalize_oui_prefix(parts[0])
+                            if len(prefix) == 6:
+                                db[prefix] = parts[-1]
+                    else:
+                        # Nmap nmap-mac-prefixes format: AABBCC Vendor Name
+                        parts = line.split(None, 1)
+                        if len(parts) == 2 and len(parts[0]) == 6:
+                            prefix = _normalize_oui_prefix(parts[0])
+                            if len(prefix) == 6 and prefix not in db:
+                                db[prefix] = parts[1].strip()
+        except OSError as exc:
+            logger.debug(f"Could not read OUI file {path}: {exc}")
+
+    db.update(KNOWN_OUI_OVERRIDES)
+    if not extra_paths:
+        _OUI_CACHE = db
+    return db
+
+
+def lookup_oui_vendor(mac: str) -> str:
+    """Look up a MAC address's 24-bit OUI in the modern OUI database."""
+    prefix = _normalize_oui_prefix(mac)
+    if len(prefix) != 6:
+        return ""
+    return load_oui_database().get(prefix, "")
+
+
+def is_randomized_mac(mac: str) -> bool:
+    """
+    Return True if `mac` has the IEEE locally administered bit set (byte0 & 0x02 != 0)
+    AND does not match a known registered OUI (such as HAOS 02:41:A2).
+    """
+    prefix = _normalize_oui_prefix(mac)
+    if len(prefix) < 2:
+        return False
+    if lookup_oui_vendor(mac):
+        return False
+    try:
+        first_byte = int(prefix[:2], 16)
+        return bool(first_byte & 0x02)
+    except ValueError:
+        return False
+
+
+def resolve_vendor(mac: str, existing_or_nmap_vendor: str | None = None) -> str:
+    """
+    Resolve the vendor for `mac`:
+      1. Preserve existing/Nmap vendor if already known (and not 'Private / Randomized MAC').
+      2. Query the modern OUI database (Wireshark manuf + Nmap prefixes + overrides).
+      3. If locally administered bit is set, return 'Private / Randomized MAC'.
+      4. Otherwise return 'Unknown'.
+    """
+    if (
+        existing_or_nmap_vendor
+        and not is_unset(existing_or_nmap_vendor)
+        and existing_or_nmap_vendor != PRIVATE_MAC_VENDOR
+    ):
+        return existing_or_nmap_vendor
+
+    oui_vendor = lookup_oui_vendor(mac)
+    if oui_vendor:
+        return oui_vendor
+
+    if is_randomized_mac(mac):
+        return PRIVATE_MAC_VENDOR
+
+    return "Unknown"
 
 
 def strip_domain_suffix(raw_hostname: str) -> str:

@@ -24,8 +24,10 @@ from enrichment import (
     PRIVATE_MAC_VENDOR,
     _build_mdns_query,
     _decode_dns_name,
+    backfill_network_data,
     clean_hostname,
     clean_mdns_hostname,
+    enrich_active_network_protocols,
     enrich_host_from_names,
     infer_from_hostname,
     is_randomized_mac,
@@ -102,6 +104,12 @@ def build_arg_parser() -> configargparse.ArgParser:
         default=0,
         help="Run continuously, repeating scan every N seconds (0 = run once and exit)",
     )
+    parser.add_argument(
+        "--backfill",
+        action="store_true",
+        default=False,
+        help="Backfill missing/Unknown names, types, and vendors across all historical rows in Google Sheets",
+    )
     return parser
 
 
@@ -170,6 +178,7 @@ def build_network(nmap_report: Any | None, resolve_names: bool = False) -> dict[
             resolved_v = resolve_vendor(mac, info.get("vendor"))
             if not is_unset(resolved_v):
                 info["vendor"] = resolved_v
+        enrich_active_network_protocols(network)
     else:
         for info in network.values():
             ip = info.get("ip", "")
@@ -357,6 +366,14 @@ def run_once(args: Any) -> int:
         existing_network = read_sheet(service, args.spreadsheet)
         merged_network, new_macs, updated_macs = merge_network_data(existing_network, new_network)
         logger.info(f"Diff summary: {len(new_macs)} new devices, {len(updated_macs)} updated active hosts.")
+        if getattr(args, "backfill", False):
+            active_ips = {info["ip"] for info in new_network.values() if info.get("ip")}
+            n_enr, t_enr, v_enr = backfill_network_data(
+                merged_network,
+                active_ips=active_ips,
+                enable_reverse_dns=(args.mock_scan is None),
+            )
+            logger.info(f"Backfill summary: {n_enr} names enriched, {t_enr} types enriched, {v_enr} vendors resolved.")
         write_sheet(service, args.spreadsheet, merged_network, dry_run=args.dry_run)
     except Exception as e:  # noqa: BLE001
         logger.error(f"Google Sheets synchronization failed: {e}")

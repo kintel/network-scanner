@@ -2,14 +2,20 @@ from unittest.mock import patch
 
 from enrichment import (
     PRIVATE_MAC_VENDOR,
+    _parse_mdns_txt,
+    backfill_network_data,
     clean_hostname,
     clean_mdns_hostname,
     enrich_host_from_names,
+    extract_mdns_service_metadata,
     infer_from_hostname,
     is_randomized_mac,
     is_unset,
+    kasa_xor_decrypt,
+    kasa_xor_encrypt,
     load_oui_database,
     lookup_oui_vendor,
+    parse_upnp_xml,
     resolve_dns_name,
     resolve_vendor,
 )
@@ -178,4 +184,74 @@ def test_randomized_mac_and_oui_resolution(tmp_path):
     assert db["001122"] == "Test Full Vendor"
     assert db["001133"] == "Nmap Format Vendor"
     assert lookup_oui_vendor("D0:CF:13:E8:DC:50") == "Espressif Inc."
+
+
+def test_mdns_txt_and_upnp_xml_parsing():
+    # Google Cast TXT record
+    rdata = b"\x0efn=Basement TV\x0dmd=Chromecast"
+    txt = _parse_mdns_txt(rdata)
+    assert txt == {"fn": "Basement TV", "md": "Chromecast"}
+    meta = extract_mdns_service_metadata("Chromecast-123._googlecast._tcp.local", txt)
+    assert meta == {"name": "Basement TV", "type": "Chromecast"}
+
+    # AirPlay TXT record
+    airplay_meta = extract_mdns_service_metadata(
+        "Main Floor._airplay._tcp.local",
+        {"model": "ECB601", "manufacturer": "ecobee Inc."},
+    )
+    assert airplay_meta == {"type": "ECB601", "vendor": "ecobee Inc."}
+
+    # UPnP XML descriptor
+    xml_sample = """<?xml version="1.0"?>
+    <root xmlns="urn:schemas-upnp-org:device-1-0">
+      <device>
+        <friendlyName>Living Room Soundbar</friendlyName>
+        <manufacturer>Sony Corporation</manufacturer>
+        <modelName>HT-Z9F</modelName>
+      </device>
+    </root>"""
+    assert parse_upnp_xml(xml_sample) == {
+        "name": "Living Room Soundbar",
+        "type": "HT-Z9F",
+        "vendor": "Sony Corporation",
+    }
+
+
+def test_kasa_xor_cipher_roundtrip():
+    msg = '{"system":{"get_sysinfo":{}}}'
+    enc = kasa_xor_encrypt(msg)
+    assert enc != msg.encode("utf-8")
+    assert kasa_xor_decrypt(enc) == msg
+
+
+def test_backfill_network_data():
+    network = {
+        "BC:35:1E:DD:E7:6B": {
+            "ip": "192.168.2.193",
+            "dns_name": "",
+            "mdns_name": "",
+            "name": "Unknown",
+            "type": "Unknown",
+            "vendor": "Unknown",
+            "timestamp": "2026-10-31 12:00:00",
+        },
+        "14:C1:4E:37:59:3D": {
+            "ip": "192.168.2.146",
+            "dns_name": "",
+            "mdns_name": "",
+            "name": "nest-thermostat-593d",
+            "type": "Unknown",
+            "vendor": "Unknown",
+            "timestamp": "2023-03-16 18:27",
+        },
+    }
+    n_enr, t_enr, v_enr = backfill_network_data(network, enable_reverse_dns=False)
+    assert network["BC:35:1E:DD:E7:6B"]["vendor"] == "Tuya Smart Inc."
+    assert network["BC:35:1E:DD:E7:6B"]["type"] == "Tuya Smart Device"
+    assert network["14:C1:4E:37:59:3D"]["type"] == "Nest Thermostat"
+    assert network["14:C1:4E:37:59:3D"]["vendor"] == "Google"
+    assert n_enr == 0
+    assert t_enr == 2
+    assert v_enr == 2
+
 

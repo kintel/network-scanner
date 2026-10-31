@@ -21,15 +21,19 @@ from libnmap.parser import NmapParser, NmapParserException
 from libnmap.process import NmapProcess
 
 from enrichment import (
+    PRIVATE_MAC_VENDOR,
     _build_mdns_query,
     _decode_dns_name,
     clean_hostname,
     clean_mdns_hostname,
     enrich_host_from_names,
     infer_from_hostname,
+    is_randomized_mac,
     is_unset,
+    lookup_oui_vendor,
     resolve_dns_and_mdns,
     resolve_dns_name,
+    resolve_vendor,
 )
 
 logger = logging.getLogger("network_scanner")
@@ -37,20 +41,25 @@ logger = logging.getLogger("network_scanner")
 SHEET_HEADERS = ["mac", "ip", "dns_name", "mdns_name", "name", "type", "vendor", "timestamp"]
 
 __all__ = [
+    "PRIVATE_MAC_VENDOR",
     "SHEET_HEADERS",
     "_build_mdns_query",
     "_decode_dns_name",
     "build_arg_parser",
     "build_network",
     "clean_hostname",
+    "clean_mdns_hostname",
     "enrich_host_from_names",
     "infer_from_hostname",
+    "is_randomized_mac",
     "is_unset",
+    "lookup_oui_vendor",
     "main",
     "merge_network_data",
     "read_sheet",
     "resolve_dns_and_mdns",
     "resolve_dns_name",
+    "resolve_vendor",
     "run_once",
     "scan",
     "write_sheet",
@@ -151,13 +160,16 @@ def build_network(nmap_report: Any | None, resolve_names: bool = False) -> dict[
     if resolve_names and network:
         active_ips = [info["ip"] for info in network.values() if info.get("ip")]
         dns_map, mdns_map, raw_by_ip = resolve_dns_and_mdns(active_ips, nmap_hostnames=nmap_hostnames)
-        for info in network.values():
+        for mac, info in network.items():
             ip = info.get("ip", "")
             if ip in dns_map:
                 info["dns_name"] = dns_map[ip]
             if ip in mdns_map:
                 info["mdns_name"] = mdns_map[ip]
             enrich_host_from_names(info, raw_by_ip.get(ip))
+            resolved_v = resolve_vendor(mac, info.get("vendor"))
+            if not is_unset(resolved_v):
+                info["vendor"] = resolved_v
     else:
         for info in network.values():
             ip = info.get("ip", "")
@@ -242,12 +254,15 @@ def merge_network_data(
         cleaned_dns_label = clean_hostname(raw_dns, ip=existing_ip)
         rec["dns_name"] = f"{cleaned_dns_label}.home" if cleaned_dns_label else ""
         rec["mdns_name"] = clean_mdns_hostname(rec.get("mdns_name", ""), ip=existing_ip)
+        if is_unset(rec.get("vendor")):
+            rec["vendor"] = resolve_vendor(mac, rec.get("vendor"))
         merged[mac] = rec
 
     new_devices: list[str] = []
     updated_devices: list[str] = []
 
     for mac, device in scan_network.items():
+        scanned_vendor = resolve_vendor(mac, device.get("vendor"))
         if mac in merged:
             merged[mac]["ip"] = device["ip"]
             merged[mac]["timestamp"] = device["timestamp"]
@@ -259,18 +274,22 @@ def merge_network_data(
                 merged[mac]["name"] = device["name"]
             if is_unset(merged[mac].get("type")) and not is_unset(device.get("type")):
                 merged[mac]["type"] = device["type"]
-            if not is_unset(device.get("vendor")):
-                merged[mac]["vendor"] = device["vendor"]
+            if not is_unset(scanned_vendor) and (
+                is_unset(merged[mac].get("vendor"))
+                or merged[mac].get("vendor") == PRIVATE_MAC_VENDOR
+                or scanned_vendor != PRIVATE_MAC_VENDOR
+            ):
+                merged[mac]["vendor"] = scanned_vendor
             updated_devices.append(mac)
         else:
-            logger.info(f"New device found: {mac} (IP: {device.get('ip')}, Vendor: {device.get('vendor', 'Unknown')})")
+            logger.info(f"New device found: {mac} (IP: {device.get('ip')}, Vendor: {scanned_vendor})")
             merged[mac] = {
                 "ip": device["ip"],
                 "dns_name": device.get("dns_name", ""),
                 "mdns_name": device.get("mdns_name", ""),
                 "name": device.get("name") if not is_unset(device.get("name")) else "Unknown",
                 "type": device.get("type") if not is_unset(device.get("type")) else "Unknown",
-                "vendor": device.get("vendor") if not is_unset(device.get("vendor")) else "Unknown",
+                "vendor": scanned_vendor,
                 "timestamp": device["timestamp"],
             }
             new_devices.append(mac)

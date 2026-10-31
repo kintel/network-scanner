@@ -1,12 +1,17 @@
 from unittest.mock import patch
 
 from enrichment import (
+    PRIVATE_MAC_VENDOR,
     clean_hostname,
     clean_mdns_hostname,
     enrich_host_from_names,
     infer_from_hostname,
+    is_randomized_mac,
     is_unset,
+    load_oui_database,
+    lookup_oui_vendor,
     resolve_dns_name,
+    resolve_vendor,
 )
 from network_scanner import merge_network_data
 
@@ -144,3 +149,33 @@ def test_enrich_and_merge_upgrades_unknown_without_overwriting_human():
     assert merged_human["CC:BA:BD:BE:D1:72"]["name"] == "Dual outdoor smart plug"
     assert merged_human["CC:BA:BD:BE:D1:72"]["type"] == "Outdoor Plug"
     assert merged_human["CC:BA:BD:BE:D1:72"]["dns_name"] == "KP400.home"
+
+
+def test_randomized_mac_and_oui_resolution(tmp_path):
+    # Locally administered randomized MACs (second least-significant bit of first byte is 1)
+    assert is_randomized_mac("12:6A:B3:AE:97:83")
+    assert is_randomized_mac("EA:36:CC:3B:0E:52")
+    assert is_randomized_mac("CE:ED:66:91:9F:69")
+    assert resolve_vendor("12:6A:B3:AE:97:83") == PRIVATE_MAC_VENDOR
+
+    # Known virtual OUI with local bit set (HAOS 02:41:A2) is NOT treated as randomized
+    assert not is_randomized_mac("02:41:A2:D2:6D:4B")
+    assert resolve_vendor("02:41:A2:D2:6D:4B") == "Home Assistant"
+
+    # Known modern hardware OUIs (ESP32-C5, Proxmox, Tuya, ASUS, TP-Link)
+    assert not is_randomized_mac("D0:CF:13:E8:DC:50")
+    assert resolve_vendor("D0:CF:13:E8:DC:50") == "Espressif Inc."
+    assert resolve_vendor("BC:24:11:29:CC:65") == "Proxmox Server Solutions GmbH"
+    assert resolve_vendor("BC:35:1E:DD:E7:6B") == "Tuya Smart Inc."
+    assert resolve_vendor("CC:BA:BD:BE:D1:72") == "TP-Link Systems Inc."
+
+    # Custom Wireshark manuf and Nmap prefix file parsing
+    manuf_file = tmp_path / "manuf"
+    manuf_file.write_text("# Comment\n00:11:22\tTestShort\tTest Full Vendor\nAA:BB:CC/28\tSkipBlock\tSkip\n")
+    nmap_file = tmp_path / "nmap-mac-prefixes"
+    nmap_file.write_text("001133 Nmap Format Vendor\n")
+    db = load_oui_database(extra_paths=(str(manuf_file), str(nmap_file)))
+    assert db["001122"] == "Test Full Vendor"
+    assert db["001133"] == "Nmap Format Vendor"
+    assert lookup_oui_vendor("D0:CF:13:E8:DC:50") == "Espressif Inc."
+

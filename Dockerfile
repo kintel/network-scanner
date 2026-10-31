@@ -9,12 +9,12 @@ RUN uv sync --frozen --no-dev --no-install-project
 # Stage 2: Minimal runtime image
 FROM python:3.12-slim
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends ca-certificates curl nmap libcap2-bin && \
-    curl -fsSL "https://www.wireshark.org/download/automated/data/manuf" -o /app/manuf && \
+    apt-get install -y --no-install-recommends ca-certificates nmap libcap2-bin && \
     rm -rf /var/lib/apt/lists/*
 COPY --from=builder /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH" PYTHONUNBUFFERED=1
 WORKDIR /app
+RUN python -c "import urllib.request; urllib.request.urlretrieve('https://www.wireshark.org/download/automated/data/manuf', '/app/manuf')"
 COPY enrichment.py network_scanner.py network-scanner.py ./
 ENTRYPOINT ["python", "network-scanner.py"]
 CMD ["--config", "/config/config.ini", "--dry-run"]

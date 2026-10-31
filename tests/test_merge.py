@@ -18,6 +18,8 @@ def test_merge_new_devices():
 
     record = merged["AA:BB:CC:DD:EE:01"]
     assert record["ip"] == "192.168.2.50"
+    assert record["dns_name"] == ""
+    assert record["mdns_name"] == ""
     assert record["name"] == "Unknown"
     assert record["type"] == "Unknown"
     assert record["vendor"] == "Acme Corp"
@@ -28,6 +30,8 @@ def test_merge_preserves_custom_annotations():
     existing = {
         "AA:BB:CC:DD:EE:01": {
             "ip": "192.168.2.50",
+            "dns_name": "old-cam.home",
+            "mdns_name": "old-cam.local",
             "name": "Living Room Camera",
             "type": "Security",
             "vendor": "Acme Old",
@@ -37,6 +41,8 @@ def test_merge_preserves_custom_annotations():
     scanned = {
         "AA:BB:CC:DD:EE:01": {
             "ip": "192.168.2.55",  # DHCP lease changed
+            "dns_name": "new-cam.home",
+            "mdns_name": "",  # mDNS temporarily not seen; preserve previous
             "timestamp": "2026-10-25 04:00:00",
             "vendor": "Acme Corp",
         }
@@ -48,7 +54,10 @@ def test_merge_preserves_custom_annotations():
 
     record = merged["AA:BB:CC:DD:EE:01"]
     assert record["ip"] == "192.168.2.55"
+    assert record["dns_name"] == "new-cam.home"  # updated live
+    assert record["mdns_name"] == "old-cam.local"  # preserved when empty
     assert record["name"] == "Living Room Camera"  # preserved
     assert record["type"] == "Security"  # preserved
     assert record["vendor"] == "Acme Corp"  # updated
     assert record["timestamp"] == "2026-10-25 04:00:00"  # updated
+
